@@ -106,9 +106,9 @@ async function toolGenerateOutline(form) {
   return callClaude(prompt);
 }
 
-// 工具②：每页排布（第3步）——每页观点式标题+核心观点+主要内容，供人review
-async function toolGeneratePagePlan(outline, form) {
-  const prompt = `你是PPT内容策划助手。基于已确认的大纲，为每一页生成排布，供人审核。
+// 工具②：每页排布（第3步）——逐页生成，每次只出一页，避免多页JSON超长被截断
+async function toolGeneratePagePlanForPage(outlineItem, outline, form, pageIndex) {
+  const prompt = `你是PPT内容策划助手。基于已确认的大纲，为其中第${pageIndex + 1}页生成排布，供人审核。
 
 标题和核心观点必须是真正的"观点"，用以下三条测试逐条自检，不通过就重写：
 1. 可反驳测试：一个持怀疑态度的听众有可能不同意这句话吗？描述已发生的事实（"我们半年前做了X"）没人能反对，不算观点，必须改写成可以被质疑的断言。
@@ -122,17 +122,17 @@ async function toolGeneratePagePlan(outline, form) {
 
 重要：锚点里的数字只能来自用户提供的信息，没有依据的数字一律写成【需补数据：XX】占位，禁止编造。
 
-只返回紧凑JSON数组（单行，无换行缩进），不要任何多余文字、不要markdown代码块。每项包含：
-- section：板块名称（原样保留）
+只返回一个紧凑JSON对象（不是数组），不要任何多余文字、不要markdown代码块。包含字段：
+- section：板块名称（原样保留：${outlineItem.section}）
 - title：这一页的标题，通过上述三条测试的观点句，20字以内
 - points：2到3条核心观点，字符串数组，每条25字以内，逐条通过三条测试
 - detail：主要内容说明，1-2句话（60字以内）——写明这页用什么数据/例子/论证思路
 
-注意控制总长度，宁可精炼不要冗长。
-
 整体背景——目标：${form.goal}；受众：${form.audience}；总体观点：${form.mainPoint}
-已确认大纲：
-${outline.map((p, i) => `${i + 1}. ${p.section}：${p.point}`).join("\n")}`;
+全稿大纲（供把握上下文，只生成第${pageIndex + 1}页）：
+${outline.map((p, i) => `${i + 1}. ${p.section}：${p.point}`).join("\n")}
+
+本页（第${pageIndex + 1}页）：${outlineItem.section}：${outlineItem.point}`;
   return callClaude(prompt);
 }
 
@@ -553,22 +553,30 @@ function StepOutline({ outline, error, outlineStatus, setOutlineStatus, onBack, 
 
 // ---- Step 3：每页排布 review ------------------------------------------------
 
-function StepPagePlan({ pagePlan, error, pagePlanStatus, setPagePlanStatus, onBack, onRegenerate, onNext, regenerating }) {
+function StepPagePlan({ pagePlan, error, pagePlanStatus, setPagePlanStatus, onBack, onRegenerate, onRetryPage, onNext, regenerating, progress }) {
+  const allReady = pagePlan && pagePlan.length > 0 && pagePlan.every((p) => !p.pending && !p.failed);
   return (
     <div className="space-y-6">
-      {error && (
-        <div className="rounded-[14px] px-4 py-3 flex items-center gap-2.5 text-[13px]" style={{ background: `${orange}12`, color: orangeDeep }}>
-          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-          生成失败：{error}。可以点"重新生成"再试。
+      {regenerating && progress?.total > 0 && (
+        <div className="rounded-[14px] px-4 py-3 flex items-center gap-2.5 text-[13px]" style={{ background: `${blue}10`, color: blue }}>
+          <Loader2 size={14} className="animate-spin" style={{ flexShrink: 0 }} />
+          逐页生成中：{progress.done} / {progress.total} 页（生成一页显示一页，不用等全部）
         </div>
       )}
 
-      {!pagePlan && !error && (
+      {error && !regenerating && (
+        <div className="rounded-[14px] px-4 py-3 flex items-center gap-2.5 text-[13px]" style={{ background: `${orange}12`, color: orangeDeep }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+          {error}
+        </div>
+      )}
+
+      {!pagePlan && (
         <GroupCard>
           <GroupRow last>
             <div className="py-4 text-center">
               <p className="text-[14px] mb-3" style={{ color: inkSecondary }}>
-                还没有生成每页排布（可能上次生成失败了）
+                还没有生成每页排布
               </p>
               <button
                 onClick={onRegenerate}
@@ -585,35 +593,82 @@ function StepPagePlan({ pagePlan, error, pagePlanStatus, setPagePlanStatus, onBa
       )}
 
       {pagePlan &&
-        pagePlan.map((p, i) => (
-          <GroupCard key={i}>
-            <GroupRow>
-              <p className="text-[12px] font-medium mb-1" style={{ color: inkTertiary }}>
-                第{i + 1}页 · {p.section}
-              </p>
-              <p className="text-[16px] font-semibold leading-snug" style={{ color: ink }}>
-                {p.title}
-              </p>
-            </GroupRow>
-            <GroupRow>
-              <FieldLabel>核心观点</FieldLabel>
-              <ul className="space-y-1.5">
-                {(p.points || []).map((pt, j) => (
-                  <li key={j} className="flex gap-2 text-[14px] leading-relaxed" style={{ color: ink }}>
-                    <span style={{ color: blue, flexShrink: 0 }}>{j + 1}.</span>
-                    <span>{pt}</span>
-                  </li>
-                ))}
-              </ul>
-            </GroupRow>
-            <GroupRow last>
-              <FieldLabel>主要内容</FieldLabel>
-              <p className="text-[14px] leading-relaxed" style={{ color: inkSecondary }}>
-                {p.detail}
-              </p>
-            </GroupRow>
-          </GroupCard>
-        ))}
+        pagePlan.map((p, i) => {
+          if (p.pending) {
+            return (
+              <GroupCard key={i}>
+                <GroupRow last>
+                  <p className="text-[12px] font-medium mb-1" style={{ color: inkTertiary }}>
+                    第{i + 1}页 · {p.section}
+                  </p>
+                  {regenerating ? (
+                    <div className="flex items-center gap-2 py-2 text-[14px]" style={{ color: inkSecondary }}>
+                      <Loader2 size={14} className="animate-spin" /> 生成中…
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => onRetryPage(i)}
+                      className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-full"
+                      style={{ background: `${blue}10`, color: blue }}
+                    >
+                      <RotateCcw size={13} /> 生成这一页（上次可能被中断）
+                    </button>
+                  )}
+                </GroupRow>
+              </GroupCard>
+            );
+          }
+          if (p.failed) {
+            return (
+              <GroupCard key={i}>
+                <GroupRow last>
+                  <p className="text-[12px] font-medium mb-1" style={{ color: inkTertiary }}>
+                    第{i + 1}页 · {p.section}
+                  </p>
+                  <p className="text-[13px] mb-2" style={{ color: orangeDeep }}>
+                    这一页生成失败{p.error ? `：${p.error}` : ""}
+                  </p>
+                  <button
+                    onClick={() => onRetryPage(i)}
+                    className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3 py-1.5 rounded-full"
+                    style={{ background: `${blue}10`, color: blue }}
+                  >
+                    <RotateCcw size={13} /> 重试这一页
+                  </button>
+                </GroupRow>
+              </GroupCard>
+            );
+          }
+          return (
+            <GroupCard key={i}>
+              <GroupRow>
+                <p className="text-[12px] font-medium mb-1" style={{ color: inkTertiary }}>
+                  第{i + 1}页 · {p.section}
+                </p>
+                <p className="text-[16px] font-semibold leading-snug" style={{ color: ink }}>
+                  {p.title}
+                </p>
+              </GroupRow>
+              <GroupRow>
+                <FieldLabel>核心观点</FieldLabel>
+                <ul className="space-y-1.5">
+                  {(p.points || []).map((pt, j) => (
+                    <li key={j} className="flex gap-2 text-[14px] leading-relaxed" style={{ color: ink }}>
+                      <span style={{ color: blue, flexShrink: 0 }}>{j + 1}.</span>
+                      <span>{pt}</span>
+                    </li>
+                  ))}
+                </ul>
+              </GroupRow>
+              <GroupRow last>
+                <FieldLabel>主要内容</FieldLabel>
+                <p className="text-[14px] leading-relaxed" style={{ color: inkSecondary }}>
+                  {p.detail}
+                </p>
+              </GroupRow>
+            </GroupCard>
+          );
+        })}
 
       <GroupCard>
         <GroupRow last>
@@ -639,7 +694,7 @@ function StepPagePlan({ pagePlan, error, pagePlanStatus, setPagePlanStatus, onBa
 
       <div className="flex gap-2.5">
         <BackButton onClick={onBack} />
-        <PrimaryButton disabled={pagePlanStatus !== "approved"} onClick={onNext}>
+        <PrimaryButton disabled={pagePlanStatus !== "approved" || !allReady} onClick={onNext}>
           进入逐页细化 <ChevronRight size={16} />
         </PrimaryButton>
       </div>
@@ -1307,6 +1362,7 @@ export default function PPTAgent() {
   const [outlineError, setOutlineError] = useState(null);
   const [planGenerating, setPlanGenerating] = useState(false);
   const [planError, setPlanError] = useState(null);
+  const [planProgress, setPlanProgress] = useState({ done: 0, total: 0 });
   const saveTimer = useRef(null);
 
   // MEMORY：启动时从 localStorage 恢复上次进度
@@ -1354,18 +1410,39 @@ export default function PPTAgent() {
     }
   };
 
-  // ORCHESTRATION：第2步确认→第3步，触发每页排布生成（真实AI调用）
+  // ORCHESTRATION：第2步确认→第3步，逐页生成排布（每页独立调用，避免整批截断）
   const handleGeneratePagePlan = async () => {
+    const outline = state.outline || [];
     setPlanGenerating(true);
     setPlanError(null);
+    setPlanProgress({ done: 0, total: outline.length });
+    // 先进入第3步并放好占位骨架，逐页填充，生成一页立刻能看一页
+    setState((s) => ({ ...s, step: 3, pagePlan: outline.map((o) => ({ section: o.section, pending: true })), pagePlanStatus: null }));
+    let failCount = 0;
+    for (let i = 0; i < outline.length; i++) {
+      try {
+        const page = await toolGeneratePagePlanForPage(outline[i], outline, state.form, i);
+        setState((s) => ({ ...s, pagePlan: s.pagePlan.map((p, j) => (j === i ? { ...page, pending: false } : p)) }));
+      } catch (err) {
+        failCount++;
+        setState((s) => ({ ...s, pagePlan: s.pagePlan.map((p, j) => (j === i ? { section: outline[i].section, pending: false, failed: true, error: err.message } : p)) }));
+      }
+      setPlanProgress({ done: i + 1, total: outline.length });
+    }
+    if (failCount > 0) setPlanError(`${failCount}页生成失败，点对应页的"重试这一页"即可，无需整批重来`);
+    setPlanGenerating(false);
+  };
+
+  // 单页重试：只重新生成失败的那一页
+  const handleRetryPlanPage = async (i) => {
+    const outline = state.outline || [];
+    if (!outline[i]) return;
+    setState((s) => ({ ...s, pagePlan: s.pagePlan.map((p, j) => (j === i ? { section: outline[i].section, pending: true } : p)) }));
     try {
-      const pagePlan = await toolGeneratePagePlan(state.outline, state.form);
-      setState({ ...state, step: 3, pagePlan, pagePlanStatus: null });
+      const page = await toolGeneratePagePlanForPage(outline[i], outline, state.form, i);
+      setState((s) => ({ ...s, pagePlan: s.pagePlan.map((p, j) => (j === i ? { ...page, pending: false } : p)) }));
     } catch (err) {
-      setPlanError(err.message);
-      setState({ ...state, step: 3, pagePlan: null, pagePlanStatus: null });
-    } finally {
-      setPlanGenerating(false);
+      setState((s) => ({ ...s, pagePlan: s.pagePlan.map((p, j) => (j === i ? { section: outline[i].section, pending: false, failed: true, error: err.message } : p)) }));
     }
   };
 
@@ -1426,7 +1503,9 @@ export default function PPTAgent() {
             setPagePlanStatus={(pagePlanStatus) => setState({ ...state, pagePlanStatus })}
             onBack={() => goTo(2)}
             onRegenerate={handleGeneratePagePlan}
+            onRetryPage={handleRetryPlanPage}
             regenerating={planGenerating}
+            progress={planProgress}
             onNext={handleEnterPages}
           />
         )}
